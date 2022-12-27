@@ -84,7 +84,7 @@ requests-toolbelt==0.9.1; python_version >= "3.7"
 requests==2.20.0
 rsa==4.8; python_version >= "3.7" and python_version < "4"
 s3transfer==0.3.7; python_version >= "3.7"
-setuptools==41.6.0
+setuptools==65.5.1
 six==1.11.0
 texttable==1.6.4; python_version >= "3.7"
 tldextract==3.2.0; python_version >= "3.7"
