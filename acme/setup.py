@@ -3,16 +3,15 @@ import sys
 from setuptools import find_packages
 from setuptools import setup
 
-version = '1.28.0.dev0'
+version = '2.3.0.dev0'
 
 install_requires = [
     'cryptography>=2.5.0',
     'josepy>=1.13.0',
-    'PyOpenSSL>=17.3.0',
+    'PyOpenSSL>=17.5.0',
     'pyrfc3339',
     'pytz>=2019.3',
     'requests>=2.20.0',
-    'requests-toolbelt>=0.3.0',
     'setuptools>=41.6.0',
 ]
 
@@ -46,6 +45,7 @@ setup(
         'Programming Language :: Python :: 3.8',
         'Programming Language :: Python :: 3.9',
         'Programming Language :: Python :: 3.10',
+        'Programming Language :: Python :: 3.11',
         'Topic :: Internet :: WWW/HTTP',
         'Topic :: Security',
     ],

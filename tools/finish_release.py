@@ -4,21 +4,17 @@ Post-release script to publish artifacts created from Azure Pipelines.
 
 This currently includes:
 
-* Moving snaps from the beta channel to the stable channel
+* Moving snaps from the candidate/beta channel to the stable channel
 * Publishing the Windows installer in a GitHub release
 
 Setup:
- - Create a github personal access token
-   - https://docs.github.com/en/github/authenticating-to-github/creating-a-personal-access-token#creating-a-token
-   - You'll need repo scope
-   - Save the token to somewhere like ~/.ssh/githubpat.txt
  - Install the snapcraft command line tool and log in to a privileged account.
    - https://snapcraft.io/docs/installing-snapcraft
    - Use the command `snapcraft login` to log in.
 
 Run:
 
-python tools/finish_release.py ~/.ssh/githubpat.txt
+python tools/finish_release.py --css <URL of code signing server>
 
 Testing:
 
@@ -36,22 +32,24 @@ import re
 import subprocess
 import sys
 import tempfile
+import getpass
+from azure.devops.connection import Connection
 from zipfile import ZipFile
 
-from azure.devops.connection import Connection
-from github import Github
 import requests
 
 # Path to the root directory of the Certbot repository containing this script
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 # This list contains the names of all Certbot DNS plugins
-DNS_PLUGINS = [os.path.basename(path) for path in glob.glob(os.path.join(REPO_ROOT, 'certbot-dns-*'))]
+PLUGIN_SNAPS = [os.path.basename(path) for path in glob.glob(os.path.join(REPO_ROOT, 'certbot-dns-*'))]
 # This list contains the name of all Certbot snaps that should be published to
 # the stable channel.
-SNAPS = ['certbot'] + DNS_PLUGINS
+ALL_SNAPS = ['certbot'] + PLUGIN_SNAPS
 # This is the count of the architectures currently supported by our snaps used
 # for sanity checking.
 SNAP_ARCH_COUNT = 3
+# The percentage of users the 2.0 Certbot snap should be deployed to.
+PROGRESSIVE_RELEASE_PERCENTAGE = 5
 
 
 def parse_args(args):
@@ -68,75 +66,23 @@ def parse_args(args):
     # Use the file's docstring for the help text and don't let argparse reformat it.
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('githubpat', help='path to your GitHub personal access token')
-    group = parser.add_mutually_exclusive_group()
-    # We use 'store_false' and a destination related to the other type of
-    # artifact to cause the flag being set to disable publishing of the other
-    # artifact. This makes using the parsed arguments later on a little simpler
-    # and cleaner.
-    group.add_argument('--snaps-only', action='store_false', dest='publish_windows',
-                        help='Skip publishing other artifacts and only publish the snaps')
-    group.add_argument('--windows-only', action='store_false', dest='publish_snaps',
-                        help='Skip publishing other artifacts and only publish the Windows installer')
+    parser.add_argument('--css', type=str, help='hostname of code signing server')
+    parser.add_argument('--progressive-only', action='store_true', help='only do a Certbot 2.0 progressive snap release')
     return parser.parse_args(args)
 
+    
+def publish_windows(css):
+    """SSH into CSS and trigger downloading Azure Pipeline assets, sign, and upload to Github
 
-def download_azure_artifacts(tempdir):
-    """Download and unzip build artifacts from Azure pipelines.
-
-    :param str path: path to a temporary directory to save the files
-
-    :returns: released certbot version number as a prefix-free string
-    :rtype: str
+    :param str css: CSS host name
 
     """
-    # Create a connection to the azure org
-    organization_url = 'https://dev.azure.com/certbot'
-    connection = Connection(base_url=organization_url)
-
-    # Find the build artifacts
-    build_client = connection.clients.get_build_client()
-    get_builds_response = build_client.get_builds('certbot', definitions='3')
-    build_id = get_builds_response.value[0].id
-    artifacts = build_client.get_artifacts('certbot', build_id)
-
-    # Save and unzip files
-    for filename in ('windows-installer', 'changelog'):
-        print("Downloading artifact %s" % filename)
-        url = build_client.get_artifact('certbot', build_id, filename).resource.download_url
-        r = requests.get(url)
-        r.raise_for_status()
-        with open(tempdir + '/' + filename + '.zip', 'wb') as f:
-            f.write(r.content)
-        print("Extracting %s" % filename)
-        with ZipFile(tempdir + '/' + filename + '.zip', 'r') as zipObj:
-           zipObj.extractall(tempdir)
-
-    version = build_client.get_build('certbot', build_id).source_branch.split('v')[1]
-    return version
-
-def create_github_release(github_access_token, tempdir, version):
-    """Use build artifacts to create a github release, including uploading additional assets
-
-    :param str github_access_token: string containing github access token
-    :param str path: path to a temporary directory where azure artifacts are located
-    :param str version: Certbot version number, e.g. 1.7.0
-
-    """
-    # Create release
-    g = Github(github_access_token)
-    repo = g.get_user('certbot').get_repo('certbot')
-    release_notes = open(tempdir + '/changelog/release_notes.md', 'r').read()
-    print("Creating git release")
-    release= repo.create_git_release('v{0}'.format(version),
-                                     'Certbot {0}'.format(version),
-                                     release_notes,
-                                     draft=True)
-
-    # Upload windows installer to release
-    print("Uploading windows installer")
-    release.upload_asset(tempdir + '/windows-installer/certbot-beta-installer-win_amd64.exe')
-    release.update_release(release.title, release.body, draft=False)
+    username = input("CSS username (usually EFF username): ")
+    host = css
+    command = "ssh -t {}@{} bash /opt/certbot-misc/css/venv.sh".format(username,host)
+    
+    print("SSH into CSS to trigger signing and uploading of Windows installer...")
+    subprocess.run(command, check=True, universal_newlines=True, shell=True)
 
 
 def assert_logged_into_snapcraft():
@@ -157,13 +103,14 @@ def assert_logged_into_snapcraft():
         sys.exit(1)
 
 
-def get_snap_revisions(snap, version):
-    """Finds the revisions for the snap and version in the beta channel.
+def get_snap_revisions(snap, channel, version):
+    """Finds the revisions for the snap and version in the given channel.
 
     If you call this function without being logged in with snapcraft, it
     will hang with no output.
 
     :param str snap: the name of the snap on the snap store
+    :param str channel: snap channel to pull revisions from
     :param str version: snap version number, e.g. 1.7.0
 
     :returns: list of revision numbers
@@ -178,20 +125,26 @@ def get_snap_revisions(snap, version):
     print('Getting revision numbers for', snap, version)
     cmd = ['snapcraft', 'status', snap]
     process = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, universal_newlines=True)
-    pattern = f'^\s+beta\s+{version}\s+(\d+)\s*$'
+    pattern = f'^\s+{channel}\s+{version}\s+(\d+)\s*'
     revisions = re.findall(pattern, process.stdout, re.MULTILINE)
-    assert len(revisions) == SNAP_ARCH_COUNT, f'Unexpected number of snaps found for {snap} {version}'
+    assert len(revisions) == SNAP_ARCH_COUNT, f'Unexpected number of snaps found for {channel} {snap} {version} (expected {SNAP_ARCH_COUNT}, found {len(revisions)})'
     return revisions
 
 
-def promote_snaps(version):
-    """Promotes all Certbot snaps from the beta to stable channel.
+def promote_snaps(snaps, source_channel, version, progressive_percentage=None):
+    """Promotes the given snaps from source_channel to the stable channel.
 
     If the snaps have already been released to the stable channel, this
     function will try to release them again which has no effect.
 
+    :param snaps: snap package names to be promoted
+    :type snaps: `list` of `str`
+    :param str source_channel: snap channel to promote from
     :param str version: the version number that should be found in the
-        beta channel, e.g. 1.7.0
+        candidate channel, e.g. 1.7.0
+    :param progressive_percentage: specifies the percentage of a progressive
+        deployment
+    :type progressive_percentage: int or None
 
     :raises SystemExit: if the command snapcraft is unavailable or it
         isn't logged into an account
@@ -201,13 +154,15 @@ def promote_snaps(version):
 
     """
     assert_logged_into_snapcraft()
-    for snap in SNAPS:
-        revisions = get_snap_revisions(snap, version)
+    for snap in snaps:
+        revisions = get_snap_revisions(snap, source_channel, version)
         # The loop below is kind of slow, so let's print some output about what
         # it is doing.
         print('Releasing', snap, 'snaps to the stable channel')
         for revision in revisions:
             cmd = ['snapcraft', 'release', snap, revision, 'stable']
+            if progressive_percentage:
+                cmd.extend(f'--progressive {progressive_percentage}'.split())
             try:
                 subprocess.run(cmd, check=True, stdout=subprocess.PIPE, universal_newlines=True)
             except subprocess.CalledProcessError as e:
@@ -216,23 +171,56 @@ def promote_snaps(version):
                 print(e.stdout)
                 raise
 
+def fetch_version_number(major_version):
+    """Retrieve version number for release from Azure Pipelines
+
+    :param major_version: only consider releases for the specified major
+        version
+    :type major_version: str or None
+
+    :returns: version number
+    
+    """
+    # Create a connection to the azure org
+    organization_url = 'https://dev.azure.com/certbot'
+    connection = Connection(base_url=organization_url)
+    
+    # Find the build artifacts
+    build_client = connection.clients.get_build_client()
+    get_builds_response = build_client.get_builds('certbot', definitions='3')
+    for build in get_builds_response.value:
+        version = build_client.get_build('certbot', build.id).source_branch.split('v')[1]
+        if major_version is None or version.split('.')[0] == major_version:
+            return version
+    raise ValueError('Release not found on Azure Pipelines!')
 
 def main(args):
     parsed_args = parse_args(args)
 
-    github_access_token_file = parsed_args.githubpat
-    github_access_token = open(github_access_token_file, 'r').read().rstrip()
+    css = parsed_args.css
+    version = fetch_version_number('2' if parsed_args.progressive_only else None)
 
-    with tempfile.TemporaryDirectory() as tempdir:
-        version = download_azure_artifacts(tempdir)
-        # Once the GitHub release has been published, trying to publish it
-        # again fails. Publishing the snaps can be done multiple times though
-        # so we do that first to make it easier to run the script again later
-        # if something goes wrong.
-        if parsed_args.publish_snaps:
-            promote_snaps(version)
-        if parsed_args.publish_windows:
-            create_github_release(github_access_token, tempdir, version)
+    # Once the GitHub release has been published, trying to publish it
+    # again fails. Publishing the snaps can be done multiple times though
+    # so we do that first to make it easier to run the script again later
+    # if something goes wrong.        
+    #
+    # We only publish all snaps to the stable channel for 1.x releases. For 2.x
+    # releases, we only progressively release the base Certbot snap and update
+    # the Windows installer. Once we feel confident enough about Certbot 2.x,
+    # we should stop doing 1.x releases and unconditionally publish all snaps
+    # and the Windows installer.
+    if version.startswith('1.'):
+        promote_snaps(ALL_SNAPS, 'candidate', version)
+    elif not parsed_args.progressive_only and parsed_args.css is None:
+        # Fail fast if we weren't given a --css argument because we're going to
+        # need it later.
+        raise ValueError('Please provide the --css command line argument')
+    else:
+        promote_snaps(['certbot'], 'beta', version,
+                      progressive_percentage=PROGRESSIVE_RELEASE_PERCENTAGE)
+        if not parsed_args.progressive_only:
+            publish_windows(css)
 
 if __name__ == "__main__":
     main(sys.argv[1:])

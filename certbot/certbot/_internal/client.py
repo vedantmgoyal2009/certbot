@@ -10,7 +10,6 @@ from typing import IO
 from typing import List
 from typing import Optional
 from typing import Tuple
-import warnings
 
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.asymmetric.rsa import generate_private_key
@@ -70,16 +69,8 @@ def acme_from_config_key(config: configuration.NamespaceConfig, key: jose.JWK,
                                     verify_ssl=(not config.no_verify_ssl),
                                     user_agent=determine_user_agent(config))
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-
-        client = acme_client.BackwardsCompatibleClientV2(net, key, config.server)
-        if client.acme_version == 1:
-            logger.warning(
-                "Certbot is configured to use an ACMEv1 server (%s). ACMEv1 support is deprecated"
-                " and will soon be removed. See https://community.letsencrypt.org/t/143839 for "
-                "more information.", config.server)
-        return cast(acme_client.ClientV2, client)
+    directory = acme_client.ClientV2.get_directory(config.server, net)
+    return acme_client.ClientV2(directory, net)
 
 
 def determine_user_agent(config: configuration.NamespaceConfig) -> str:
@@ -256,18 +247,13 @@ def perform_registration(acme: acme_client.ClientV2, config: configuration.Names
                    " Please use --eab-kid and --eab-hmac-key.")
             raise errors.Error(msg)
 
+    tos = acme.directory.meta.terms_of_service
+    if tos_cb and tos:
+        tos_cb(tos)
+
     try:
-        newreg = messages.NewRegistration.from_data(
-            email=config.email, external_account_binding=eab)
-        # Until ACME v1 support is removed from Certbot, we actually need the provided
-        # ACME client to be a wrapper of type BackwardsCompatibleClientV2.
-        # TODO: Remove this cast and rewrite the logic when the client is actually a ClientV2
-        try:
-            return cast(acme_client.BackwardsCompatibleClientV2,
-                        acme).new_account_and_tos(newreg, tos_cb)
-        except AttributeError:
-            raise errors.Error("The ACME client must be an instance of "
-                               "acme.client.BackwardsCompatibleClientV2")
+        return acme.new_account(messages.NewRegistration.from_data(
+                email=config.email, terms_of_service_agreed=True, external_account_binding=eab))
     except messages.Error as e:
         if e.code in ("invalidEmail", "invalidContact"):
             if config.noninteractive_mode:
@@ -291,8 +277,8 @@ class Client:
     :ivar .Authenticator auth: Prepared (`.Authenticator.prepare`)
         authenticator that can solve ACME challenges.
     :ivar .Installer installer: Installer.
-    :ivar acme.client.BackwardsCompatibleClientV2 acme: Optional ACME
-        client API handle. You might already have one from `register`.
+    :ivar acme.client.ClientV2 acme: Optional ACME client API handle. You might
+        already have one from `register`.
 
     """
 
@@ -438,7 +424,17 @@ class Client:
             csr = crypto_util.generate_csr(key, domains, self.config.csr_dir,
                                            self.config.must_staple, self.config.strict_permissions)
 
-        orderr = self._get_order_and_authorizations(csr.data, self.config.allow_subset_of_names)
+        try:
+            orderr = self._get_order_and_authorizations(csr.data, self.config.allow_subset_of_names)
+        except messages.Error as error:
+            # Some domains may be rejected during order creation.
+            # Certbot can retry the operation without the rejected
+            # domains contained within subproblems.
+            if self.config.allow_subset_of_names:
+                successful_domains = self._successful_domains_from_error(error, domains)
+                if successful_domains != domains and len(successful_domains) != 0:
+                    return self._retry_obtain_certificate(key, csr, domains, successful_domains)
+            raise
         authzr = orderr.authorizations
         auth_domains = {a.body.identifier.value for a in authzr}
         successful_domains = [d for d in domains if d in auth_domains]
@@ -449,13 +445,20 @@ class Client:
         # domains contains a wildcard because the ACME spec forbids identifiers
         # in authzs from containing a wildcard character.
         if self.config.allow_subset_of_names and successful_domains != domains:
-            if not self.config.dry_run:
-                os.remove(key.file)
-                os.remove(csr.file)
-            return self.obtain_certificate(successful_domains)
+            return self._retry_obtain_certificate(key, csr, domains, successful_domains)
         else:
-            cert, chain = self.obtain_certificate_from_csr(csr, orderr)
-            return cert, chain, key, csr
+            try:
+                cert, chain = self.obtain_certificate_from_csr(csr, orderr)
+                return cert, chain, key, csr
+            except messages.Error as error:
+                # Some domains may be rejected during the very late stage of
+                # order finalization. Certbot can retry the operation without
+                # the rejected domains contained within subproblems.
+                if self.config.allow_subset_of_names:
+                    successful_domains = self._successful_domains_from_error(error, domains)
+                    if successful_domains != domains and len(successful_domains) != 0:
+                        return self._retry_obtain_certificate(key, csr, domains, successful_domains)
+                raise
 
     def _get_order_and_authorizations(self, csr_pem: bytes,
                                       best_effort: bool) -> messages.OrderResource:
@@ -527,6 +530,27 @@ class Client:
             new_name, cert,
             key.pem, chain,
             self.config)
+
+    def _successful_domains_from_error(self, error: messages.Error, domains: List[str],
+                                ) -> List[str]:
+        if error.subproblems is not None:
+            failed_domains = [problem.identifier.value for problem in error.subproblems
+                                if problem.identifier is not None]
+            successful_domains = [x for x in domains if x not in failed_domains]
+            return successful_domains
+        return []
+
+    def _retry_obtain_certificate(self, key: util.Key,
+                                csr: util.CSR, domains: List[str], successful_domains: List[str]
+                                ) -> Tuple[bytes, bytes, util.Key, util.CSR]:
+        failed_domains = [d for d in domains if d not in successful_domains]
+        domains_list = ", ".join(failed_domains)
+        display_util.notify("Unable to obtain a certificate with every requested "
+            f"domain. Retrying without: {domains_list}")
+        if not self.config.dry_run:
+            os.remove(key.file)
+            os.remove(csr.file)
+        return self.obtain_certificate(successful_domains)
 
     def _choose_lineagename(self, domains: List[str], certname: Optional[str]) -> str:
         """Chooses a name for the new lineage.

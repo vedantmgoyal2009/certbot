@@ -313,7 +313,7 @@ configuration checkpoints and rollback.
 Writing your own plugin
 -----------------------
 
-.. note:: The Certbot team is not currently accepting any new DNS plugins
+.. note:: The Certbot team is not currently accepting any new plugins
     because we want to rethink our approach to the challenge and resolve some
     issues like `#6464 <https://github.com/certbot/certbot/issues/6464>`_,
     `#6503 <https://github.com/certbot/certbot/issues/6503>`_, and `#6504
@@ -500,6 +500,9 @@ Submitting a pull request
 
 Steps:
 
+0. We recommend you talk with us in a GitHub issue or :ref:`Mattermost <ask for
+   help>` before writing a pull request to ensure the changes you're making is
+   something we have the time and interest to review.
 1. Write your code! When doing this, you should add :ref:`mypy type annotations
    <type annotations>` for any functions you add or modify. You can check that
    you've done this correctly by running ``tox -e mypy`` on a machine that has
@@ -582,8 +585,8 @@ include our snaps, Docker images, Windows installer, CI, and our development
 environments.
 
 In most cases, the file where dependency versions are specified is
-``tools/requirements.txt``. There are two exceptions to this. The first is our
-"oldest" tests where ``tools/oldest_constraints.txt`` is used instead. The
+``tools/requirements.txt``. There are three exceptions to this. The first is
+our "oldest" tests where ``tools/oldest_constraints.txt`` is used instead. The
 purpose of the "oldest" tests is to ensure Certbot continues to work with the
 oldest versions of our dependencies which we claim to support. The oldest
 versions of the dependencies we support should also be declared in our setup.py
@@ -594,6 +597,12 @@ tests. As of writing this, there is one test we run nightly in CI where we
 leave Certbot's dependencies unpinned. The thinking behind this test is to help
 us learn about breaking changes in our dependencies so that we can respond
 accordingly.
+
+The third exception is temporary and at ``tools/1.32.x/requirements.txt``.
+This file is simply a copy of ``tools/requirements.txt`` from our 1.32.x branch
+to help us ensure those dependencies stay reasonably well updated while we still
+have Certbot 1.x snap users. Once we've moved all snap users to Certbot 2.0,
+this file should be deleted.
 
 The choices of whether Certbot's dependencies are pinned and what file is used
 if they are should be automatically handled for you most of the time by

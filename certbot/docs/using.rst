@@ -14,7 +14,7 @@ obtaining, renewing, or revoking certificates. The most important
 and commonly-used commands will be discussed throughout this
 document; an exhaustive list also appears near the end of the document.
 
-The ``certbot`` script on your web server might be named ``letsencrypt`` if your system uses an older package, or ``certbot-auto`` if you used a now-deprecated installation method. Throughout the docs, whenever you see ``certbot``, swap in the correct name as needed.
+The ``certbot`` script on your web server might be named ``letsencrypt`` if your system uses an older package. Throughout the docs, whenever you see ``certbot``, swap in the correct name as needed.
 
 .. _plugins:
 
@@ -206,7 +206,6 @@ use the DNS plugins on your system.
 Once installed, you can find documentation on how to use each plugin at:
 
 * `certbot-dns-cloudflare <https://certbot-dns-cloudflare.readthedocs.io>`_
-* `certbot-dns-cloudxns <https://certbot-dns-cloudxns.readthedocs.io>`_
 * `certbot-dns-digitalocean <https://certbot-dns-digitalocean.readthedocs.io>`_
 * `certbot-dns-dnsimple <https://certbot-dns-dnsimple.readthedocs.io>`_
 * `certbot-dns-dnsmadeeasy <https://certbot-dns-dnsmadeeasy.readthedocs.io>`_
@@ -316,10 +315,14 @@ dns-lightsail_     Y    N    DNS Authentication using Amazon Lightsail DNS API
 dns-inwx_          Y    Y    DNS Authentication for INWX through the XML API
 dns-azure_         Y    N    DNS Authentication using Azure DNS
 dns-godaddy_       Y    N    DNS Authentication using Godaddy DNS
+dns-yandexcloud_   Y    N    DNS Authentication using Yandex Cloud DNS
+dns-bunny_         Y    N    DNS Authentication using BunnyDNS
 njalla_            Y    N    DNS Authentication for njalla
 DuckDNS_           Y    N    DNS Authentication for DuckDNS
 Porkbun_           Y    N    DNS Authentication for Porkbun
 Infomaniak_        Y    N    DNS Authentication using Infomaniak Domains API
+dns-multi_         Y    N    DNS authentication of 100+ providers using go-acme/lego
+dns-dnsmanager_    Y    N    DNS Authentication for dnsmanager.io
 ================== ==== ==== ===============================================================
 
 .. _haproxy: https://github.com/greenhost/certbot-haproxy
@@ -336,10 +339,14 @@ Infomaniak_        Y    N    DNS Authentication using Infomaniak Domains API
 .. _dns-inwx: https://github.com/oGGy990/certbot-dns-inwx/
 .. _dns-azure: https://github.com/binkhq/certbot-dns-azure
 .. _dns-godaddy: https://github.com/miigotu/certbot-dns-godaddy
+.. _dns-yandexcloud: https://github.com/PykupeJIbc/certbot-dns-yandexcloud
+.. _dns-bunny: https://github.com/mwt/certbot-dns-bunny
 .. _njalla: https://github.com/chaptergy/certbot-dns-njalla
 .. _DuckDNS: https://github.com/infinityofspace/certbot_dns_duckdns
 .. _Porkbun: https://github.com/infinityofspace/certbot_dns_porkbun
 .. _Infomaniak: https://github.com/Infomaniak/certbot-dns-infomaniak
+.. _dns-multi: https://github.com/alexzorin/certbot-dns-multi
+.. _dns-dnsmanager: https://github.com/stayallive/certbot-dns-dnsmanager
 
 If you're interested, you can also :ref:`write your own plugin <dev-plugin>`.
 
@@ -450,68 +457,49 @@ replace that set entirely::
 
   certbot certonly --cert-name example.com -d example.org,www.example.org
 
+.. _using-ecdsa-keys:
 
-Using ECDSA keys
-----------------
+RSA and ECDSA keys
+------------------------
 
-As of version 1.10, Certbot supports two types of private key algorithms:
-``rsa`` and ``ecdsa``. The type of key used by Certbot can be controlled
-through the ``--key-type`` option. You can also use the ``--elliptic-curve``
-option to control the curve used in ECDSA certificates.
+Certbot supports two certificate private key algorithms: ``rsa`` and ``ecdsa``.
+
+As of version 2.0.0, Certbot defaults to ECDSA ``secp256r1`` (P-256) certificate private keys
+for all new certificates. Existing certificates will continue to renew using their existing key
+type, unless a key type change is requested.
+
+The type of key used by Certbot can be controlled through the ``--key-type`` option.
+You can use the ``--elliptic-curve`` option to control the curve used in ECDSA
+certificates and the ``--rsa-key-size`` option to control the size of RSA keys.
 
 .. warning:: If you obtain certificates using ECDSA keys, you should be careful
-   not to downgrade your Certbot installation since ECDSA keys are not
-   supported by older versions of Certbot. Downgrades like this are possible if
-   you switch from something like the snaps or pip to packages
-   provided by your operating system which often lag behind.
+   not to downgrade to a Certbot version earlier than 1.10.0 where ECDSA keys were
+   not supported. Downgrades like this are possible if you switch from something like
+   the snaps or pip to packages provided by your operating system which often lag behind.
 
-Changing existing certificates from RSA to ECDSA
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Changing a certificate's key type
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Unless you are aware that you need to support very old HTTPS clients that are
-not supported by most sites, you can safely just transition your site to use
-ECDSA keys instead of RSA keys. To accomplish this if you have existing
-certificates managed by Certbot, you may freely change the certificate to a new
-private key.
-
-If you want to use ECDSA keys for all certificates in the future, you can
-simply add the following line to Certbot's :ref:`configuration file <config-file>`
-
-.. code-block:: ini
-
-  key-type = ecdsa
-
-After this option is set, newly obtained certificates will use ECDSA keys. This
-includes certificates managed by Certbot that previously used RSA keys.
+not supported by most sites, you can safely transition your site to use
+ECDSA keys instead of RSA keys.
 
 If you want to change a single certificate to use ECDSA keys, you'll need to
-issue a new Certbot command setting ``--key-type ecdsa`` on the command line
-like
+create or renew a certificate while setting ``--key-type ecdsa`` on the command line:
 
 .. code-block:: shell
 
   certbot renew --key-type ecdsa --cert-name example.com --force-renewal
 
-Obtaining ECDSA certificates in addition to RSA certificates
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+If you want to use ECDSA keys for all certificates in the future (including renewals
+of existing certificates), you can add the following line to Certbot's
+:ref:`configuration file <config-file>`:
 
-When Certbot configures the certificates it obtains with Apache or Nginx, all
-HTTPS clients that we try to support can use certificates with ECDSA keys. If,
-however, you are aware of having a specific need to support very old TLS
-clients, you may want to obtain both ECDSA and RSA certificates for the same
-domains. Certbot can only configure Apache or Nginx to use a single
-certificate, however, you could manually configure your software to use the
-different certificates depending on your needs.
+.. code-block:: ini
 
-When obtaining both ECDSA and RSA certificates for the same domains with
-Certbot, we recommend using the ``--cert-name`` option to give your
-certificates names so that you can easily identify them. For instance, you may
-want to append "ecdsa" to the name of your ECDSA certificate by using a command
-like
+  key-type = ecdsa
 
-.. code-block:: shell
-
-  certbot certonly --key-type ecdsa --cert-name example.com-ecdsa
+which will take effect upon the next renewal of each certificate.
 
 Revoking certificates
 ---------------------
@@ -557,6 +545,11 @@ If you need to delete a certificate, use the ``delete`` subcommand.
 
 .. note:: Read this and the `Safely deleting certificates`_ sections carefully. This is an irreversible operation and must
           be done with care.
+
+Certbot does not automatically revoke a certificate before deleting it. If you're no longer using a certificate and don't
+plan to use it anywhere else, you may want to follow the instructions in `Revoking certificates`_ instead. Generally, there's
+no need to revoke a certificate if its private key has not been compromised, but you may still receive expiration emails
+from Let's Encrypt unless you revoke.
 
 .. note:: Do not manually delete certificate files from inside ``/etc/letsencrypt/``. Always use the ``delete`` subcommand.
 
@@ -1077,6 +1070,12 @@ different CA by providing ``--server`` on the command line or in a
 ACME directory. For example, if you would like to use Let's Encrypt's
 staging server, you would add ``--server
 https://acme-staging-v02.api.letsencrypt.org/directory`` to the command line.
+
+If Certbot does not trust the SSL certificate used by the ACME server, you
+can use the `REQUESTS_CA_BUNDLE
+<https://requests.readthedocs.io/en/latest/user/advanced/#ssl-cert-verification>`_
+environment variable to override the root certificates trusted by Certbot. Certbot
+uses the ``requests`` library, which does not use the operating system trusted root store.
 
 If you use ``--server`` to specify an ACME CA that implements the standardized
 version of the spec, you may be able to obtain a certificate for a

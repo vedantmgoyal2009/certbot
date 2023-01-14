@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 import configobj
 import josepy as jose
+from unittest import mock
 
 from acme import challenges
 from certbot import achallenges
@@ -17,12 +18,6 @@ if TYPE_CHECKING:
     from typing_extensions import Protocol
 else:
     Protocol = object
-
-
-try:
-    import mock
-except ImportError:  # pragma: no cover
-    from unittest import mock  # type: ignore
 
 
 DOMAIN = 'example.com'
@@ -38,14 +33,12 @@ class _AuthenticatorCallableTestCase(Protocol):
         See
         https://docs.python.org/3/library/unittest.html#unittest.TestCase.assertTrue
         """
-        ...
 
     def assertEqual(self, *unused_args: Any) -> None:
         """
         See
         https://docs.python.org/3/library/unittest.html#unittest.TestCase.assertEqual
         """
-        ...
 
 
 class BaseAuthenticatorTest:

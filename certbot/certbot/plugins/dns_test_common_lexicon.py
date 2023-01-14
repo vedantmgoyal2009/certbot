@@ -1,6 +1,7 @@
 """Base test class for DNS authenticators built on Lexicon."""
 from typing import Any
 from typing import TYPE_CHECKING
+from unittest import mock
 from unittest.mock import MagicMock
 
 import josepy as jose
@@ -14,10 +15,6 @@ from certbot.plugins.dns_common_lexicon import LexiconClient
 from certbot.plugins.dns_test_common import _AuthenticatorCallableTestCase
 from certbot.tests import util as test_util
 
-try:
-    import mock
-except ImportError:  # pragma: no cover
-    from unittest import mock  # type: ignore
 if TYPE_CHECKING:
     from typing_extensions import Protocol
 else:
@@ -57,7 +54,6 @@ class _LexiconAwareTestCase(Protocol):
         See
         https://docs.python.org/3/library/unittest.html#unittest.TestCase.assertRaises
         """
-        ...
 
 
 # These classes are intended to be subclassed/mixed in, so not all members are defined.
